@@ -1,0 +1,334 @@
+﻿using System.Collections.Generic;
+using System.Linq;
+using static System.Math;
+
+namespace Planks1
+{
+    public static class Lags
+    {
+
+        public static (List<Lag>, LagsStats) lags(List<Plank> pls, List<Lag> lgs0,
+            double L0, double L1, double L3, double L4, double maxLen, double W1, double Y0)
+        {
+            List<Lag> lgs = lgs0 == null ? new List<Lag>() : lgs0.ToList();
+            // from input planks list *pls* form working list *planks*.
+            List<Plank> planks = new List<Plank>();
+            pls.ForEach(x => {
+                Plank t = new Plank(); t.x1 = Min(x.x1, x.x2); t.x2 = Max(x.x1, x.x2); // orient plank so that
+                t.y1 = Min(x.y1, x.y2); t.y2 = Max(x.y1, x.y2);                        // x2>x1, y2>y1
+                findLagsIntersections(t, lgs);                                         // find intersection points 
+                                                                                       // with initial lags set
+                findLeftmostFreeInterval(t, L0, L1, L3, L4);                           // find places for lag                         
+                planks.Add(t);
+            });
+
+            planks = planks.OrderBy(x => x.y1).ToList();
+
+            // check and define Y0 
+            double ymin = planks.Select(x => x.y1).Min();
+            double ymax = planks.Select(x => x.y2).Max();
+            double dymax = ymax - ymin;                              //total structure width
+            double dymin = planks.Select(x => x.y2 - x.y1).Min();  //minimal plank width
+
+            if (W1 <= 0 || W1 >= dymax) W1 = Min(dymin * 10, dymax / 5);
+            if (Y0 < ymin - 0.5 * dymax || Y0 > ymax + 0.5 * dymax)
+                Y0 = ymin;
+            else
+                Y0 = Y0 - (Floor((Y0 - ymin) / W1) + 1) * W1;
+
+            double minLen = 2 * W1;
+            maxLen = Max(Round(maxLen / W1) * W1, 2 * W1);    // округлить максимальную длину до целого числа W1
+
+            // set tolerance on interval between planks (0.01 of minimal plank width)
+            double stepY = 0.01 * dymin;
+
+            int loop = 1000;
+            while (loop-- > 0)                           // cycle until all planks are fixed
+            {
+                var p0 = planks.FindAll(p=>!p.isOpen).OrderBy(p => p.xb).First();
+                //var p0 = planks.MinBy(x => x.xb);          // plank with leftmost interval requiring fixing
+
+                if (p0.xa >= 1e10) break;              // exit if all planks are fixed
+
+                double x1 = p0.xa, x2 = p0.xb;
+                double y1 = p0.y1, y2 = p0.y2;
+
+                // find all planks with fixing intervals intersecting with segment [x1, x2]
+                List<Plank> pleft = planks.FindAll(p => (p.xa >= x1 && p.xa <= x2) || (p.xb >= x1 && p.xb <= x2));
+
+                // create cluster for adjaicent planks
+                List<Plank> pclust = new List<Plank>();
+                pclust.Add(p0);
+                pleft.Remove(p0);
+
+                // adding planks adjacent from above and below
+                // x1, x2 interval common to all planks in cluster
+                int count = 1;
+                while (count > 0)   // end cycle if no more plank added
+                {
+                    count = 0;
+                    foreach (var p in pleft)
+                    {
+                        if (p.y1 - y2 <= stepY && p.y1 - y2 >= 0)  // adjacent plank below cluster
+                        {
+                            y2 = p.y2;
+                            count++;
+                            x1 = Max(x1, p.xa);
+                            x2 = Min(x2, p.xb);
+                            if (!p.isOpen) pclust.Add(p);
+                        }
+                        if (y1 - p.y2 <= stepY && y1 - p.y2 >= 0)  // adjacent plank above cluster
+                        {
+                            y1 = p.y1;
+                            count++;
+                            x1 = Max(x1, p.xa);
+                            x2 = Min(x2, p.xb);
+                            if (!p.isOpen) pclust.Add(p);
+                        }
+                    }
+                }
+                double x = x2;
+
+                y1 = pclust.Select(p => p.y1).Min();
+                y2 = pclust.Select(p => p.y2).Max();
+                double y1a = Y0 + Floor((y1 - Y0) / W1) * W1;
+                double y2a = Y0 + (Floor((y2 - Y0) / W1) * W1 + W1);
+                // set cluster width l >= minLen ! removed 16.06.2022
+                //while (y2a - y1a < minLen*0.99)
+                //    if (y1 - y1a < y2a - y2)
+                //        y1a -= W1;
+                //    else
+                //        y2a += W1;
+                y1 = y1a;
+                y2 = y2a;
+
+                // set cluster width to l <= maxLen
+                List<Plank> pclust1 = pclust.ToList();     // группа досок закрепляемых лагом с учетом максимальной длины
+                if (y2 - y1 > maxLen)
+                {
+                    pclust1 = new List<Plank>() { p0 };
+                    pclust = pclust.OrderBy(p => p.y1).ToList();
+                    int i1 = pclust.IndexOf(p0);
+                    int i2 = pclust.IndexOf(p0);
+                    y1 = Y0 + Floor((p0.y1 - Y0) / W1) * W1;
+                    y2 = Y0 + (Floor((p0.y2 - Y0) / W1) * W1 + W1);
+                    while (y2 - y1 <= maxLen)
+                    {
+                        if (i1 == 0 && i2 == pclust.Count - 1) break;
+                        if (i1 == 0)
+                        {
+                            i2++;
+                            double y2t = Y0 + (Floor((pclust[i2].y2 - Y0) / W1) * W1 + W1);
+                            if (y2t - y1 > maxLen) break;
+                            y2 = y2t;
+                            pclust1.Add(pclust[i2]);
+                            continue;
+                        }
+                        if (i2 == pclust.Count - 1)
+                        {
+                            i1--;
+                            double y1t = Y0 + (Floor((pclust[i1].y1 - Y0) / W1) * W1);
+                            if (y2 - y1t > maxLen) break;
+                            y1 = y1t;
+                            pclust1.Add(pclust[i1]);
+                            continue;
+                        }
+                        if (pclust[i1 - 1].xb > pclust[i2 + 1].xb)
+                        {
+                            double y2t = Y0 + (Floor((pclust[i2 + 1].y2 - Y0) / W1) * W1 + W1);
+                            if (y2t - y1 <= maxLen)
+                            {
+                                y2 = y2t;
+                                i2++;
+                                pclust1.Add(pclust[i2]);
+                                continue;
+                            }
+                            else
+                            {
+                                double y1t = Y0 + (Floor((pclust[i1 - 1].y1 - Y0) / W1) * W1);
+                                if (y2 - y1t > maxLen) break;
+                                y1 = y1t;
+                                i1--;
+                                pclust1.Add(pclust[i1]);
+                                continue;
+                            }
+                        }
+                        if (pclust[i1 - 1].xb <= pclust[i2 + 1].xb)
+                        {
+                            double y1t = Y0 + (Floor((pclust[i1 - 1].y1 - Y0) / W1) * W1);
+                            if (y2 - y1t <= maxLen)
+                            {
+                                y1 = y1t;
+                                i1--;
+                                pclust1.Add(pclust[i1]);
+                                continue;
+                            }
+                            else
+                            {
+                                double y2t = Y0 + (Floor((pclust[i2 + 1].y2 - Y0) / W1) * W1 + W1);
+                                if (y2t - y1 > maxLen) break;
+                                y2 = y2t;
+                                i2++;
+                                pclust1.Add(pclust[i2]);
+                                continue;
+                            }
+                        }
+                    }
+                }
+
+                double xclust1= pclust1.Select(p => p.x1).Max();   // самый близкий к лагу левый конец доски из группы
+                double xclust2 = pclust1.Select(p => p.x2).Min();  // самый близкий к лагу правый конец доски из группы
+                double xclustm = 0.5 * (xclust1 + xclust2);
+                double xclusta = pclust1.Select(p => p.xa).Max();  // границы интервала, где должен проходить лаг
+                double xclustb = pclust1.Select(p => p.xb).Min();
+                if (xclusta >= xclustm)  
+                    x = xclusta;
+                else
+                    if (xclustb <= xclustm) 
+                        x = xclustb;
+                    else
+                        x= xclustm;
+                // add new lag
+                Lag lag = new Lag() { x1 = x, x2 = x, y1 = y1, y2 = y2 };
+                lgs.Add(lag);
+                // update planks intersected by new lag
+                foreach (var p in planks)
+                {
+                    findIntersectionPoints(p, lag);
+                    findLeftmostFreeInterval(p, L0, L1, L3, L4);
+                }
+            }
+            return (lgs, new LagsStats(planks, lgs, Y0, W1));
+        }
+
+        private static void findLeftmostFreeInterval(Plank p, double L0, double L1, double L3, double L4)
+        {
+            if (p.isOpen)
+            {
+                p.xa = p.x1;
+                p.xb = p.x2;
+                return;
+            }
+            // find place for new lag.
+            // if no place set bounds to very big values
+            p.xa = 1e11;
+            p.xb = 1e11;
+            double l = p.x2 - p.x1;
+            if (!p.xsect.Any())   // case: no lags yet then should be place for at least 1 lag 
+            {
+                p.xa = p.x1 + L4; p.xb = (l >= L1 + L3 + L4) ? p.x1 + L1 : p.x2 - L3 - L4;
+                if (l >= 2 * L4 + L3 && p.x2 - p.xb <= l / 2) p.xb = Min(p.x1 + l / 2 - L3 / 2, p.x1 + L1 - L3 / 2);
+                if (l < 2 * L4 + L3) { p.xa = p.x1 + l / 3; p.xb = p.x2 - l / 3; }
+            }
+            else   // case: there is at least 1 lag 
+            {
+                if (l < 2 * L4 + L3) return;                   // for short plank 1 lag is enough
+                                                               // exit without result
+                                                               // process right edge
+                double l1 = p.xsect[0] - p.x1;                 // length from left edge to leftmost intersection point
+                if (l1 > L1 * 1.01)                            // edge is long and needs additional lag
+                {
+                    p.xa = p.x1 + L4;
+                    p.xb = Min(p.x1 + L1, p.xsect[0] - L3);
+                    return;                                    // exit procedure if place found
+                }
+                else
+                {
+                    if (p.xsect.Count == 1 && p.x2 - p.xsect[0] < l1)       // plank has 1 lag in the middle but requires 2nd lag
+                    {                                                       // and right side is shorter so put 2nd lag on left side
+                        p.xa = Min(p.x1 + L4, p.x1 + l1 / 3);
+                        p.xb = Max(p.xsect[0] - L3, p.xsect[0] - l1 / 3);
+                        return;                                             // exit procedure if place found
+                    }
+                }
+
+                // find place for new lag in intervals between existing lags if distance >L0
+                for (int i = 1; i < p.xsect.Count; i++)
+                {
+                    if (p.xsect[i] - p.xsect[i - 1] <= L0 * 1.01) continue;
+                    p.xb = Min(p.xsect[i - 1] + L0, p.xsect[i] - L3);
+                    p.xa = (p.xsect[i - 1] + 2 * p.xb) / 3;
+                    return;                                                 // exit procedure if place found
+                }
+
+                // process right edge
+                int N = p.xsect.Count - 1;
+                double l2 = p.x2 - p.xsect[N];   // length from rightmost intersection point 
+                if (l2 > L1 * 1.01)                // edge is long and needs additional lag
+                {
+                    p.xb = Min(p.x2 - L4, p.xsect[N] + L0);
+                    p.xa = (p.xsect[N] + 2 * p.xb) / 3;
+                    return;
+                }
+                else
+                {
+                    if (p.xsect.Count == 1)                 // edge is not long but plank needs 2nd lag
+                    {
+                        p.xa = Max(p.xsect[N] + L3, p.xsect[N] + l2 / 2);
+                        p.xb = Max(p.x2 - L4, p.x2 - l2 / 4);
+                        return;
+                    }
+                }
+
+            }
+        }
+
+        private static void findIntersectionPoints(Plank p, Lag l)
+        {
+            if (p.isOpen) return;
+            double dl=Abs(l.y2 - l.y1)*0.01;
+            if (p.x1 <= Min(l.x1, l.x2) && p.x2 >= Max(l.x1, l.x2) &&
+                p.y1 >= Min(l.y1, l.y2)-dl && p.y2 <= Max(l.y1, l.y2)+dl)
+                p.xsect.Add(l.x1);
+            p.xsect.Sort();
+        }
+
+        private static void findLagsIntersections(Plank p, List<Lag> lgs)
+        {
+            if (p.isOpen) return;
+            p.xsect.Clear();
+            foreach (var l in lgs)
+                if (p.x1 <= Min(l.x1, l.x2) && p.x2 >= Max(l.x1, l.x2) &&
+                    p.y1 >= Min(l.y1, l.y2) && p.y2 <= Max(l.y1, l.y2))
+                    p.xsect.Add(l.x1);
+            p.xsect.Sort();
+        }
+    }
+
+    public class Lag
+    {
+        public double x1 { get; set; }
+        public double y1 { get; set; }
+        public double x2 { get; set; }
+        public double y2 { get; set; }
+    }
+
+    public class Plank
+    {
+        public double x1 { get; set; }
+        public double y1 { get; set; }
+        public double x2 { get; set; }
+        public double y2 { get; set; }
+
+        public bool isOpen { get; set; }
+
+        internal double xa = 1e11, xb = 1e11;               // leftmost interval that requires supporting lag.
+                                                            // Big values mean that plank is fully fixed
+
+        internal List<double> xsect = new List<double>();   // list of intersection points
+    }
+
+    public class LagsStats
+    {
+        public LagsStats(List<Plank> planks, List<Lag> lgs, double y0, double w1)
+        {
+            sectNumber = planks.Select(p => p.xsect.Count).Sum();
+            Y0 = y0;
+            W1 = w1;
+        }
+
+        public int sectNumber { get; private set; } = 0;
+        public double Y0 { get; private set; } = 0;
+        public double W1 { get; private set; } = 0;
+    }
+}
